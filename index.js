@@ -1,12 +1,64 @@
 
+const express = require("express");
+const QRCode = require("qrcode");
+const pino = require("pino");
+
 const {
   default: makeWASocket,
   useMultiFileAuthState,
   DisconnectReason
 } = require("@whiskeysockets/baileys");
 
-const pino = require("pino");
-const qrcode = require("qrcode-terminal");
+const app = express();
+app.use(express.urlencoded({ extended: false }));
+
+const PORT = process.env.PORT || 3000;
+const PAGE_PASSWORD = process.env.PAGE_PASSWORD;
+
+let qrData = "";
+let connected = false;
+
+app.get("/", (req, res) => {
+  res.type("html").send(`
+    <h2>LUFFY SOLUTIONS — Bot</h2>
+    <form method="POST" action="/login">
+      <input type="password" name="password"
+        placeholder="Palavra-passe" required>
+      <button type="submit">Entrar</button>
+    </form>
+  `);
+});
+
+app.post("/login", async (req, res) => {
+  if (!PAGE_PASSWORD || req.body.password !== PAGE_PASSWORD) {
+    return res.status(401).send("Palavra-passe incorreta ou não configurada.");
+  }
+
+  if (connected) {
+    return res.send("Bot já conectado ao WhatsApp.");
+  }
+
+  if (!qrData) {
+    return res.send("QR Code ainda não disponível. Tenta novamente daqui a pouco.");
+  }
+
+  const image = await QRCode.toDataURL(qrData);
+
+  res.type("html").send(`
+    <h2>Associar WhatsApp</h2>
+    <p>WhatsApp > Dispositivos associados > Associar dispositivo</p>
+    <img src="${image}" width="300">
+    <p>Não partilhes este QR Code.</p>
+  `);
+});
+
+app.get("/status", (req, res) => {
+  res.json({ connected, qrAvailable: Boolean(qrData) });
+});
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log("Servidor LUFFY SOLUTIONS iniciado.");
+});
 
 async function iniciarBot() {
   const { state, saveCreds } =
@@ -15,32 +67,30 @@ async function iniciarBot() {
   const sock = makeWASocket({
     auth: state,
     logger: pino({ level: "silent" }),
-    printQRInTerminal: false,
     browser: ["Luffy Solutions", "Safari", "1.0.0"]
   });
 
   sock.ev.on("creds.update", saveCreds);
 
-  sock.ev.on("connection.update", (update) => {
-    const { connection, lastDisconnect, qr } = update;
-
-    if (qr) {
-      console.log("Leia este QR Code com o WhatsApp:");
-      qrcode.generate(qr, { small: true });
-    }
+  sock.ev.on("connection.update", ({ connection, lastDisconnect, qr }) => {
+    if (qr) qrData = qr;
 
     if (connection === "open") {
-      console.log("Bot LUFFY SOLUTIONS conectado!");
+      connected = true;
+      qrData = "";
+      console.log("Bot conectado!");
     }
 
     if (connection === "close") {
-      const code =
-        lastDisconnect?.error?.output?.statusCode;
+      connected = false;
+      qrData = "";
+
+      const code = lastDisconnect?.error?.output?.statusCode;
 
       if (code !== DisconnectReason.loggedOut) {
-        setTimeout(() => iniciarBot(), 5000);
+        setTimeout(iniciarBot, 5000);
       } else {
-        console.log("Sessão terminada. É necessário ligar novamente.");
+        console.log("Sessão terminada. É necessário associar novamente.");
       }
     }
   });
@@ -54,65 +104,26 @@ async function iniciarBot() {
       const jid = msg.key.remoteJid;
       if (!jid || jid === "status@broadcast" || jid.endsWith("@g.us")) continue;
 
-      const conteudo = msg.message.conversation ||
-        msg.message.extendedTextMessage?.text || "";
+      const text = (
+        msg.message.conversation ||
+        msg.message.extendedTextMessage?.text ||
+        ""
+      ).trim().toLowerCase();
 
-      const comando = conteudo.trim().toLowerCase();
-      let resposta = "";
+      const respostas = {
+        menu: "🏴‍☠️ LUFFY SOLUTIONS\nMais megas, mais liberdade!\n\nT - Diários\nE - Diários Elite\nS - Semanais\nM - Mensais\nDM - Diamond\nP - Pagamentos\nSITE - Nosso site",
+        ajuda: "Escreve MENU para ver os comandos.",
+        t: "☀️ PACOTES DIÁRIOS\nConsulte a tabela de preços da LUFFY SOLUTIONS.",
+        e: "🔥 PACOTES DIÁRIOS ELITE\nConsulte a tabela de preços.",
+        s: "📅 PACOTES SEMANAIS\n⚠️ Não pode ter Txuna Crédito.",
+        m: "🗓️ PACOTES MENSAIS\n⚠️ Não pode ter Txuna Crédito.",
+        dm: "💎 PACOTES DIAMOND\nConsulte os pacotes disponíveis.",
+        p: "💳 PAGAMENTOS\nM-Pesa: 850694701 — Jesualde\ne-Mola: 877236004 — Emilio\n\nGuarda o SMS da transação e envia o comprovativo.",
+        site: "🌐 LUFFY SOLUTIONS\nConsulte o nosso site oficial."
+      };
 
-      switch (comando) {
-        case "menu":
-        case "ajuda":
-          resposta =
-            "🏴‍☠️ *LUFFY SOLUTIONS*\n" +
-            "Mais megas, mais liberdade!\n\n" +
-            "☀️ T - Pacotes diários\n" +
-            "🔥 E - Diários Elite\n" +
-            "📅 S - Semanais\n" +
-            "🗓️ M - Mensais\n" +
-            "💎 DM - Diamond\n" +
-            "💳 P - Pagamentos\n" +
-            "🌐 SITE - Nosso site";
-          break;
-
-        case "t":
-          resposta = "☀️ *PACOTES DIÁRIOS*\nConsulte os preços no nosso site ou escreva SITE.";
-          break;
-
-        case "e":
-          resposta = "🔥 *PACOTES DIÁRIOS ELITE*\nConsulte os preços no nosso site ou escreva SITE.";
-          break;
-
-        case "s":
-          resposta = "📅 *PACOTES SEMANAIS*\n⚠️ NB: Para MB semanais não pode ter Txuna Crédito.\nConsulte os preços no site.";
-          break;
-
-        case "m":
-          resposta = "🗓️ *PACOTES MENSAIS*\n⚠️ NB: Para MB mensais não pode ter Txuna Crédito.\nConsulte os preços no site.";
-          break;
-
-        case "dm":
-          resposta = "💎 *PACOTES DIAMOND*\nConsulte os pacotes disponíveis no site.";
-          break;
-
-        case "p":
-          resposta =
-            "💳 *FORMAS DE PAGAMENTO*\n\n" +
-            "M-Pesa: 850694701\nTitular: Jesualde\n\n" +
-            "e-Mola: 877236004\nTitular: Emilio\n\n" +
-            "Após pagar, guarde o SMS da transação e envie o comprovativo.";
-          break;
-
-        case "site":
-          resposta = "🌐 *LUFFY SOLUTIONS*\nConsulte o nosso site oficial para escolher o seu pacote.";
-          break;
-
-        default:
-          resposta = "";
-      }
-
-      if (resposta) {
-        await sock.sendMessage(jid, { text: resposta });
+      if (respostas[text]) {
+        await sock.sendMessage(jid, { text: respostas[text] });
       }
     }
   });
